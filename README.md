@@ -5,7 +5,7 @@ A suite of smart contracts for a governance-enabled token, a yield-bearing vault
 [![Solidity](https://img.shields.io/badge/Solidity-^0.8.20-363636?style=flat-square)](https://soliditylang.org/)
 [![Foundry](https://img.shields.io/badge/Tested%20With-Foundry-red?style=flat-square)](https://getfoundry.sh/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/Tests-131%20Passing-brightgreen?style=flat-square)](https://github.com/Enricrypto/meridian-finance-yield-farming/test)
+[![Tests](https://img.shields.io/badge/Tests-117%20Passing-brightgreen?style=flat-square)](https://github.com/Enricrypto/meridian-finance-yield-farming/test)
 
 ## 🌟 Overview
 
