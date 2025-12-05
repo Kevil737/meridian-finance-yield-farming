@@ -4,6 +4,7 @@ pragma solidity ^0.8.30;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IStrategy} from "../interfaces/IStrategy.sol";
+import {ZeroAddress} from "../MeridianVault.sol";
 
 /**
  * @title IPool (Aave V3)
@@ -100,6 +101,12 @@ contract AaveV3StrategySimple is IStrategy {
      * - Mainnet: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2
      */
     constructor(address _vault, address _asset, address _pool) {
+        // Check key parameters to prevent contract initialization failure
+        if (_vault == address(0)) revert ZeroAddress(); // 👈 FIX 1
+        if (_asset == address(0)) revert ZeroAddress(); // 👈 FIX 2
+
+        // Check owner if inherited from Ownable, which you already did in MeridianVault
+        // if (_owner == address(0)) revert ZeroAddress(); // (If needed)
         vault = _vault;
         asset = _asset;
         pool = IPool(_pool);
@@ -132,39 +139,73 @@ contract AaveV3StrategySimple is IStrategy {
     }
 
     /// @notice Withdraw assets from Aave
-    function withdraw(uint256 amount) external override onlyVault returns (uint256) {
-        // Check what we actually have
+    /// @dev Ensures the actual amount received from Aave is captured and transferred to the Vault.
+    function withdraw(uint256 amount) external override onlyVault returns (uint256 actualWithdrawn) {
+        // 1. CHECKS (Determine amount to redeem)
         uint256 available = aToken.balanceOf(address(this));
         uint256 toWithdraw = amount > available ? available : amount;
 
+        // Safe Guard Clause Check
+        // If toWithdraw is 0, we skip the remaining logic.
         if (toWithdraw > 0) {
-            // Withdraw from Aave directly to this contract
-            pool.withdraw(asset, toWithdraw, address(this));
+            // --- Interaction 1 (Aave Withdrawal) ---
+            // The Aave Pool's withdraw function returns the actual amount of underlying asset transferred.
+            uint256 aaveReturnedAmount = pool.withdraw(asset, toWithdraw, address(this));
 
-            // Send to vault
-            IERC20(asset).safeTransfer(vault, toWithdraw);
+            // 2. EFFECTS (Internal State Update)
+            actualWithdrawn = aaveReturnedAmount;
+
+            // 3. INTERACTION 2 (Transfer to Vault)
+            // This check is now redundant because it relies on the safeTransfer function handling the zero-transfer case.
+            // However, keeping it makes the intent explicit and follows the Checks-Effects-Interactions pattern for external calls.
+            if (actualWithdrawn > 0) {
+                // Transfer the exact amount received from Aave to the vault
+                IERC20(asset).safeTransfer(vault, actualWithdrawn);
+            }
+
+            emit Withdrawn(actualWithdrawn);
+            return actualWithdrawn;
         }
-
-        emit Withdrawn(toWithdraw);
-        return toWithdraw;
+        // If toWithdraw was 0, it falls through here.
+        emit Withdrawn(0);
+        return 0;
     }
 
     /// @notice Withdraw everything from Aave
-    function withdrawAll() external override onlyVault returns (uint256) {
+    function withdrawAll() external override onlyVault returns (uint256 total) {
         uint256 balance = aToken.balanceOf(address(this));
 
+        uint256 actualAmountReceived = 0; // Initialize a variable to hold the amount Aave returns
+
         if (balance > 0) {
-            // type(uint256).max tells Aave to withdraw full balance
-            pool.withdraw(asset, type(uint256).max, address(this));
+            // type(uint256).max tells Aave to withdraw full balance.
+            // Capture the return value of the external call.
+            actualAmountReceived = pool.withdraw(asset, type(uint256).max, address(this));
         }
 
-        // Send everything to vault
-        uint256 total = IERC20(asset).balanceOf(address(this));
+        // --- Interaction (Transfer to Vault) ---
+
+        // We now have two possible amounts to transfer:
+        // 1. 'actualAmountReceived' (the amount Aave said it sent).
+        // 2. 'total' (the contract's current asset balance).
+
+        // The safest approach is to send the contract's entire current balance of the asset,
+        // which might include dust or small amounts already present.
+        // We will keep your original balance check logic for the transfer, but use the
+        // 'actualAmountReceived' for the final return/event if it's cleaner.
+
+        // Get the total current balance of the underlying asset
+        total = IERC20(asset).balanceOf(address(this));
+
         if (total > 0) {
+            // Send the entire balance to the vault
             IERC20(asset).safeTransfer(vault, total);
         }
 
+        // EFFECTS (State Updates)
         lastRecordedAssets = 0;
+
+        // Emit the total amount sent to the vault
         emit Withdrawn(total);
         return total;
     }

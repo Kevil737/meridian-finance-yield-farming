@@ -60,6 +60,12 @@ contract RewardsDistributor is ReentrancyGuard, Ownable {
     /// @notice User reward info: vault => user => info
     mapping(address => mapping(address => UserRewardInfo)) public userRewards;
 
+    // New storage to track total rewards, replacing per-vault tracking for claiming
+    mapping(address => uint256) public userTotalPendingRewards;
+
+    /// @notice Tracks the total claimable reward amount for a user across all vaults.
+    mapping(address => uint256) public userTotalClaimableReward;
+
     /// @notice Total MRD distributed so far
     uint256 public totalDistributed;
 
@@ -74,6 +80,7 @@ contract RewardsDistributor is ReentrancyGuard, Ownable {
     event RewardsClaimed(address indexed user, address indexed vault, uint256 amount);
     event Staked(address indexed user, address indexed vault, uint256 amount);
     event Withdrawn(address indexed user, address indexed vault, uint256 amount);
+    event TotalRewardsClaimed(address indexed user, uint256 reward);
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -177,41 +184,46 @@ contract RewardsDistributor is ReentrancyGuard, Ownable {
         _updateReward(msg.sender, vault);
 
         uint256 reward = userRewards[vault][msg.sender].rewards;
-        if (reward == 0) revert NoRewards();
+        // Allow the transaction to proceed if the reward is zero/dust,
+        // or only proceed if the reward is meaningful.
+        if (reward > 0) {
+            // Only proceed if a meaningful reward exists
 
-        userRewards[vault][msg.sender].rewards = 0;
-        totalDistributed += reward;
+            // Effects (State Updates)
+            userRewards[vault][msg.sender].rewards = 0;
+            totalDistributed += reward;
 
-        // Mint rewards to user
-        rewardToken.mint(msg.sender, reward);
+            // Interaction (External Call)
+            rewardToken.mint(msg.sender, reward);
 
-        emit RewardsClaimed(msg.sender, vault, reward);
+            emit RewardsClaimed(msg.sender, vault, reward);
+        }
+        // If reward is <= 0, the function just exits without reverting or changing state/calling external.
+        // If you MUST revert on zero reward:
+        else {
+            revert NoRewards();
+        }
     }
 
     /**
-     * @notice Claim rewards from multiple vaults
-     * @param vaultList Array of vault addresses
+     * @notice Claims all accumulated rewards for the user across all vaults.
+     * @dev This replaces claimMultiple and relies on rewards being updated
+     * during deposit/withdraw or single claim calls.
      */
-    function claimMultiple(address[] calldata vaultList) external nonReentrant {
-        uint256 totalReward = 0;
+    function claimAll() external nonReentrant {
+        uint256 rewardToClaim = userTotalClaimableReward[msg.sender];
 
-        for (uint256 i = 0; i < vaultList.length; i++) {
-            address vault = vaultList[i];
-            if (!factory.isVault(vault)) continue;
+        if (rewardToClaim > 0) {
+            // Effects (State updates - BEFORE external call)
+            userTotalClaimableReward[msg.sender] = 0;
+            totalDistributed += rewardToClaim;
 
-            _updateReward(msg.sender, vault);
+            // Interaction (External call)
+            rewardToken.mint(msg.sender, rewardToClaim);
 
-            uint256 reward = userRewards[vault][msg.sender].rewards;
-            if (reward > 0) {
-                userRewards[vault][msg.sender].rewards = 0;
-                totalReward += reward;
-                emit RewardsClaimed(msg.sender, vault, reward);
-            }
-        }
-
-        if (totalReward > 0) {
-            totalDistributed += totalReward;
-            rewardToken.mint(msg.sender, totalReward);
+            emit TotalRewardsClaimed(msg.sender, rewardToClaim); // You'll need to define this event
+        } else {
+            revert NoRewards();
         }
     }
 
@@ -264,7 +276,24 @@ contract RewardsDistributor is ReentrancyGuard, Ownable {
         _updateVaultReward(vault);
 
         UserRewardInfo storage userInfo = userRewards[vault][user];
-        userInfo.rewards = earned(user, vault);
+        // 1. Calculate the final earned reward based on current state
+        uint256 finalEarnedReward = earned(user, vault);
+
+        // 2. Check if the user had previous, un-claimed rewards in this vault
+        // This is the reward amount currently sitting in userInfo.rewards
+        // that needs to be added to the total claimable pool.
+        uint256 rewardToAccumulate = finalEarnedReward - userInfo.rewards;
+
+        // 3. Accumulate the reward into the user's total claimable pool
+        // This removes the need for `claimMultiple` to loop and accumulate.
+        if (rewardToAccumulate > 0) {
+            userTotalClaimableReward[user] += rewardToAccumulate;
+        }
+
+        // 4. Reset the user's per-vault state to the calculated final earned amount
+        // The finalEarnedReward is stored here, meaning the reward calculation
+        // for the next second will start from this point.
+        userInfo.rewards = finalEarnedReward;
         userInfo.rewardPerTokenPaid = vaultRewards[vault].rewardPerTokenStored;
     }
 

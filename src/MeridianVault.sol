@@ -10,6 +10,18 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IStrategy} from "./interfaces/IStrategy.sol";
 
+/*//////////////////////////////////////////////////////////////
+                             GLOBAL ERRORS
+//////////////////////////////////////////////////////////////*/
+
+error ZeroAddress();
+error FeeTooHigh();
+error NoStrategy();
+error StrategyAssetMismatch();
+error DepositsPausedError();
+error AllocationTooHigh();
+error InsufficientBuffer();
+
 /**
  * @title MeridianVault
  * @author Meridian Finance
@@ -76,18 +88,6 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
     event FundsWithdrawnFromStrategy(uint256 amount);
 
     /*//////////////////////////////////////////////////////////////
-                                 ERRORS
-    //////////////////////////////////////////////////////////////*/
-
-    error ZeroAddress();
-    error FeeTooHigh();
-    error NoStrategy();
-    error StrategyAssetMismatch();
-    error DepositsPausedError();
-    error AllocationTooHigh();
-    error InsufficientBuffer();
-
-    /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
@@ -104,6 +104,7 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
         ERC20(_name, _symbol)
         Ownable(_owner)
     {
+        if (address(_asset) == address(0)) revert ZeroAddress();
         if (_treasury == address(0)) revert ZeroAddress();
         if (_owner == address(0)) revert ZeroAddress();
 
@@ -181,7 +182,7 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
      * @dev Withdraws all funds from old strategy before switching
      * @param _strategy New strategy address
      */
-    function setStrategy(address _strategy) external onlyOwner {
+    function setStrategy(address _strategy) external onlyOwner nonReentrant {
         if (_strategy == address(0)) revert ZeroAddress();
 
         IStrategy newStrategy = IStrategy(_strategy);
@@ -190,7 +191,7 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
 
         // Withdraw from old strategy
         if (address(strategy) != address(0)) {
-            strategy.withdrawAll();
+            uint256 withdrawn = strategy.withdrawAll();
         }
 
         address oldStrategy = address(strategy);
@@ -213,13 +214,19 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
         // Tell strategy to realize profits
         (uint256 profit, uint256 loss) = strategy.harvest(); // Strategy records assets at this point (pre-fee)
 
-        uint256 feesPaid = 0;
+        uint256 actualFeesPaid = 0;
+
         if (profit > 0 && performanceFee > 0) {
-            feesPaid = (profit * performanceFee) / FEE_DENOMINATOR;
+            // Calculate the EXPECTED fee amount
+            uint256 expectedFees = (profit * performanceFee) / FEE_DENOMINATOR;
             // 1. Withdraw fees from strategy
-            strategy.withdraw(feesPaid); // Strategy assets drop here!
+            uint256 actualFeesWithdrawn = strategy.withdraw(expectedFees); // Strategy assets drop here!
+
+            actualFeesPaid = actualFeesWithdrawn;
+
             // 2. Transfer fees to treasury
-            IERC20(asset()).safeTransfer(treasury, feesPaid);
+            // If actualFeesWithdrawn is 0, safeTransfer is a no-op, which is safe.
+            IERC20(asset()).safeTransfer(treasury, actualFeesPaid);
         }
 
         // Now that fees are deducted, tell the Strategy its final asset value.
@@ -228,7 +235,7 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
 
         lastTotalAssets = totalAssets();
 
-        emit Harvested(profit, loss, feesPaid);
+        emit Harvested(profit, loss, actualFeesPaid);
     }
 
     /**
@@ -277,10 +284,10 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
     /**
      * @notice Emergency: withdraw all from strategy
      */
-    function emergencyWithdrawFromStrategy() external onlyOwner {
+    function emergencyWithdrawFromStrategy() external onlyOwner nonReentrant {
         if (address(strategy) != address(0)) {
             strategy.setEmergencyExit();
-            strategy.withdrawAll();
+            uint256 withdrawn = strategy.withdrawAll();
         }
         depositsPaused = true;
         emit DepositsPaused(true);
