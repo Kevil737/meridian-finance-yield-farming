@@ -5,25 +5,18 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {mulDiv} from "prb-math/Common.sol";
 import {MeridianToken} from "./MeridianToken.sol";
 import {VaultFactory} from "./VaultFactory.sol";
 
+interface ITokenDecimals {
+    function decimals() external view returns (uint8);
+}
+
 /**
  * @title RewardsDistributor
- * @author Meridian Finance
  * @notice Distributes MRD governance tokens to vault depositors
- * @dev Implements a staking-like rewards mechanism per vault
- *
- * Mechanism:
- * - Each vault has a configurable reward rate (MRD per second)
- * - Users earn rewards proportional to their share of the vault
- * - Rewards accrue continuously and can be claimed anytime
- * - Uses "reward per token" accumulator pattern (like Synthetix)
- *
- * Example:
- * - Vault has 1000 shares total, rate = 1 MRD/sec
- * - User has 100 shares (10%)
- * - After 100 seconds: User earned 10 MRD (100 sec * 1 MRD/sec * 10%)
+ * @dev Vaults call notifyDepositFor / notifyWithdrawFor to update user rewards.
  */
 contract RewardsDistributor is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
@@ -33,44 +26,36 @@ contract RewardsDistributor is ReentrancyGuard, Ownable {
     //////////////////////////////////////////////////////////////*/
 
     struct VaultRewardInfo {
-        uint256 rewardRate; // MRD per second
+        uint256 rewardRate; // MRD per second (scaled to 1e18)
         uint256 lastUpdateTime; // Last time rewards were updated
-        uint256 rewardPerTokenStored; // Accumulated reward per token
-        uint256 totalStaked; // Total vault shares staked (cached)
+        uint256 rewardPerTokenStored; // Accumulated reward per token (1e18 precision)
+        uint256 totalStaked; // Cached total vault shares (totalSupply) - SCALED TO 1e18
+        uint8 vaultDecimals; // The decimals of the vault share token (e.g., 6 for USDC vault shares)
     }
 
     struct UserRewardInfo {
         uint256 rewardPerTokenPaid; // User's snapshot of rewardPerToken
-        uint256 rewards; // Accumulated unclaimed rewards
+        uint256 rewards; // Accumulated reward (finalEarnedReward)
     }
 
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice MRD token
     MeridianToken public immutable rewardToken;
-
-    /// @notice Vault factory (to verify vaults)
     VaultFactory public immutable factory;
 
-    /// @notice Reward info per vault
     mapping(address => VaultRewardInfo) public vaultRewards;
-
-    /// @notice User reward info: vault => user => info
     mapping(address => mapping(address => UserRewardInfo)) public userRewards;
 
-    // New storage to track total rewards, replacing per-vault tracking for claiming
-    mapping(address => uint256) public userTotalPendingRewards;
-
-    /// @notice Tracks the total claimable reward amount for a user across all vaults.
-    mapping(address => uint256) public userTotalClaimableReward;
-
-    /// @notice Total MRD distributed so far
     uint256 public totalDistributed;
 
-    /// @notice Reward rate cap (prevent excessive minting)
-    uint256 public constant MAX_REWARD_RATE = 100 * 1e18; // 100 MRD per second max
+    mapping(address => address[]) private userVaults;
+    mapping(address => mapping(address => bool)) private userHasVault;
+
+    mapping(address => uint256) public userTotalClaimableReward;
+
+    uint256 public constant MAX_REWARD_RATE = 100 * 1e18;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -94,13 +79,9 @@ contract RewardsDistributor is ReentrancyGuard, Ownable {
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
-    /**
-     * @notice Deploy rewards distributor
-     * @param _rewardToken MRD token address
-     * @param _factory VaultFactory address
-     * @param _owner Admin address
-     */
     constructor(address _rewardToken, address _factory, address _owner) Ownable(_owner) {
+        require(_rewardToken != address(0), "zero reward token");
+        require(_factory != address(0), "zero factory");
         rewardToken = MeridianToken(_rewardToken);
         factory = VaultFactory(_factory);
     }
@@ -109,9 +90,6 @@ contract RewardsDistributor is ReentrancyGuard, Ownable {
                           REWARD CALCULATION
     //////////////////////////////////////////////////////////////*/
 
-    /**
-     * @notice Calculate current reward per token for a vault
-     */
     function rewardPerToken(address vault) public view returns (uint256) {
         VaultRewardInfo storage info = vaultRewards[vault];
 
@@ -120,128 +98,154 @@ contract RewardsDistributor is ReentrancyGuard, Ownable {
         }
 
         uint256 timeElapsed = block.timestamp - info.lastUpdateTime;
-        uint256 rewardAccrued = timeElapsed * info.rewardRate * 1e18 / info.totalStaked;
+
+        uint256 rewardAccrued = mulDiv(
+            info.rewardRate * timeElapsed,
+            1e18,
+            info.totalStaked
+        );
 
         return info.rewardPerTokenStored + rewardAccrued;
     }
 
-    /**
-     * @notice Calculate earned rewards for a user in a vault
-     */
     function earned(address user, address vault) public view returns (uint256) {
-        UserRewardInfo storage userInfo = userRewards[vault][user];
-        uint256 balance = IERC20(vault).balanceOf(user);
+        VaultRewardInfo storage info = vaultRewards[vault];
+        UserRewardInfo storage u = userRewards[vault][user];
 
-        uint256 rewardDelta = rewardPerToken(vault) - userInfo.rewardPerTokenPaid;
-        uint256 newRewards = balance * rewardDelta / 1e18;
+        uint256 rpt = rewardPerToken(vault);
 
-        return userInfo.rewards + newRewards;
+        uint256 rawBalance = IERC20(vault).balanceOf(user);
+        uint256 scaledBalance = _scaleTo18DecimalsUint(rawBalance, info.vaultDecimals);
+
+        uint256 rptDelta = rpt - u.rewardPerTokenPaid;
+
+        return u.rewards + (scaledBalance * rptDelta) / 1e18;
     }
 
     /*//////////////////////////////////////////////////////////////
-                           USER OPERATIONS
+                           VAULT-CALLED FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+
+function notifyDepositFor(address user, address vault) external nonReentrant {
+    if (!factory.isVault(msg.sender)) revert NotAVault();
+
+    uint8 decimals = vaultRewards[vault].vaultDecimals;
+    require(decimals > 0, "Vault not initialized");
+
+    uint256 rawTotalSupply = IERC20(vault).totalSupply();
+    vaultRewards[vault].totalStaked = _scaleTo18DecimalsUint(rawTotalSupply, decimals);
+
+    // Initialize user's rewardPerTokenPaid snapshot if first time
+    if (!userHasVault[user][vault]) {
+        userVaults[user].push(vault);
+        userHasVault[user][vault] = true;
+        userRewards[vault][user].rewardPerTokenPaid = vaultRewards[vault].rewardPerTokenStored;
+    }
+
+    emit Staked(user, vault, IERC20(vault).balanceOf(user));
+}
+
+    function notifyWithdrawFor(address user, address vault) external nonReentrant {
+    if (!factory.isVault(msg.sender)) revert NotAVault();
+
+    uint8 decimals = vaultRewards[vault].vaultDecimals;
+    require(decimals > 0, "Vault not initialized");
+
+    uint256 rawTotalSupply = IERC20(vault).totalSupply();
+    vaultRewards[vault].totalStaked = _scaleTo18DecimalsUint(rawTotalSupply, decimals);
+
+    // Initialize user's rewardPerTokenPaid snapshot if first time
+    if (!userHasVault[user][vault]) {
+        userVaults[user].push(vault);
+        userHasVault[user][vault] = true;
+        userRewards[vault][user].rewardPerTokenPaid = vaultRewards[vault].rewardPerTokenStored;
+    }
+
+    emit Withdrawn(user, vault, IERC20(vault).balanceOf(user));
+}
+
+    /*//////////////////////////////////////////////////////////////
+                           USER CLAIMS
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Notify the distributor of a deposit (updates rewards)
-     * @dev Called by users after depositing to vault
-     * @param vault Vault address
-     */
-    function notifyDeposit(address vault) external nonReentrant {
-        if (!factory.isVault(vault)) revert NotAVault();
-
-        _updateReward(msg.sender, vault);
-
-        // Update cached total
-        vaultRewards[vault].totalStaked = IERC20(vault).totalSupply();
-
-        emit Staked(msg.sender, vault, IERC20(vault).balanceOf(msg.sender));
-    }
-
-    /**
-     * @notice Notify the distributor of a withdrawal (updates rewards)
-     * @dev Called by users before/after withdrawing from vault
-     * @param vault Vault address
-     */
-    function notifyWithdraw(address vault) external nonReentrant {
-        if (!factory.isVault(vault)) revert NotAVault();
-
-        _updateReward(msg.sender, vault);
-
-        // Update cached total
-        vaultRewards[vault].totalStaked = IERC20(vault).totalSupply();
-
-        emit Withdrawn(msg.sender, vault, IERC20(vault).balanceOf(msg.sender));
-    }
-
-    /**
-     * @notice Claim accrued MRD rewards from a vault
-     * @param vault Vault to claim from
+     * @notice Claim accrued rewards from a single vault
+     * @param vault Address of the vault to claim rewards from
+     * @dev Only callable if user has a positive balance in the vault
+     * Calculates accrued rewards since last claim and mints MRD tokens to user
      */
     function claim(address vault) external nonReentrant {
-        if (!factory.isVault(vault)) revert NotAVault();
+        uint256 userBalance = IERC20(vault).balanceOf(msg.sender);
+        require(userBalance > 0, "No balance in vault");
 
         _updateReward(msg.sender, vault);
 
         uint256 reward = userRewards[vault][msg.sender].rewards;
-        // Allow the transaction to proceed if the reward is zero/dust,
-        // or only proceed if the reward is meaningful.
-        if (reward > 0) {
-            // Only proceed if a meaningful reward exists
+        if (reward == 0) revert NoRewards();
 
-            // Effects (State Updates)
-            userRewards[vault][msg.sender].rewards = 0;
-            totalDistributed += reward;
+        userRewards[vault][msg.sender].rewards = 0;
 
-            // Interaction (External Call)
-            rewardToken.mint(msg.sender, reward);
-
-            emit RewardsClaimed(msg.sender, vault, reward);
+        if (userTotalClaimableReward[msg.sender] >= reward) {
+            userTotalClaimableReward[msg.sender] -= reward;
+        } else {
+            userTotalClaimableReward[msg.sender] = 0;
         }
-        // If reward is <= 0, the function just exits without reverting or changing state/calling external.
-        // If you MUST revert on zero reward:
-        else {
-            revert NoRewards();
-        }
+
+        totalDistributed += reward;
+
+        rewardToken.mint(msg.sender, reward);
+
+        emit RewardsClaimed(msg.sender, vault, reward);
     }
 
     /**
-     * @notice Claims all accumulated rewards for the user across all vaults.
-     * @dev This replaces claimMultiple and relies on rewards being updated
-     * during deposit/withdraw or single claim calls.
+     * @notice Claim all accrued rewards across all vaults the user has interacted with
+     * @dev Iterates through all user vaults and claims rewards from those with positive balances
+     * Skips vaults where user has zero balance to save gas
+     * Aggregates rewards and mints total MRD tokens in single transaction
      */
     function claimAll() external nonReentrant {
-        uint256 rewardToClaim = userTotalClaimableReward[msg.sender];
+        address[] storage vaults = userVaults[msg.sender];
+        uint256 totalReward = 0;
 
-        if (rewardToClaim > 0) {
-            // Effects (State updates - BEFORE external call)
-            userTotalClaimableReward[msg.sender] = 0;
-            totalDistributed += rewardToClaim;
+        for (uint256 i = 0; i < vaults.length; i++) {
+            address v = vaults[i];
 
-            // Interaction (External call)
-            rewardToken.mint(msg.sender, rewardToClaim);
+            uint256 userBalance = IERC20(v).balanceOf(msg.sender);
+            if (userBalance == 0) continue;
 
-            emit TotalRewardsClaimed(msg.sender, rewardToClaim); // You'll need to define this event
-        } else {
-            revert NoRewards();
+            _updateReward(msg.sender, v);
+
+            uint256 r = userRewards[v][msg.sender].rewards;
+            if (r > 0) {
+                totalReward += r;
+                userRewards[v][msg.sender].rewards = 0;
+            }
         }
+
+        if (totalReward == 0) revert NoRewards();
+
+        userTotalClaimableReward[msg.sender] = 0;
+
+        totalDistributed += totalReward;
+
+        rewardToken.mint(msg.sender, totalReward);
+
+        emit TotalRewardsClaimed(msg.sender, totalReward);
     }
 
     /*//////////////////////////////////////////////////////////////
                                  ADMIN
     //////////////////////////////////////////////////////////////*/
 
-    /**
-     * @notice Set reward rate for a vault
-     * @param vault Vault address
-     * @param rate MRD per second
-     */
     function setRewardRate(address vault, uint256 rate) external onlyOwner {
         if (!factory.isVault(vault)) revert NotAVault();
         if (rate > MAX_REWARD_RATE) revert RateTooHigh();
 
-        // Update rewards before changing rate
-        _updateVaultReward(vault);
+        VaultRewardInfo storage info = vaultRewards[vault];
+        uint256 currentRpt = rewardPerToken(vault);
+        info.rewardPerTokenStored = currentRpt;
+        info.lastUpdateTime = block.timestamp;
 
         uint256 oldRate = vaultRewards[vault].rewardRate;
         vaultRewards[vault].rewardRate = rate;
@@ -249,67 +253,88 @@ contract RewardsDistributor is ReentrancyGuard, Ownable {
         emit RewardRateUpdated(vault, oldRate, rate);
     }
 
-    /**
-     * @notice Initialize a vault for rewards
-     * @param vault Vault address
-     * @param rate Initial reward rate
-     */
     function initializeVault(address vault, uint256 rate) external onlyOwner {
         if (!factory.isVault(vault)) revert NotAVault();
         if (rate > MAX_REWARD_RATE) revert RateTooHigh();
+
+        uint8 decimals = ITokenDecimals(vault).decimals();
+
+        uint256 rawTotalSupply = IERC20(vault).totalSupply();
+        uint256 scaledTotalStaked = _scaleTo18DecimalsUint(rawTotalSupply, decimals);
 
         vaultRewards[vault] = VaultRewardInfo({
             rewardRate: rate,
             lastUpdateTime: block.timestamp,
             rewardPerTokenStored: 0,
-            totalStaked: IERC20(vault).totalSupply()
+            totalStaked: scaledTotalStaked,
+            vaultDecimals: decimals
         });
 
         emit RewardRateUpdated(vault, 0, rate);
     }
 
     /*//////////////////////////////////////////////////////////////
-                            INTERNAL FUNCTIONS
+                            INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
 
+    function _scaleTo18DecimalsUint(uint256 amount, uint8 tokenDecimals) internal pure returns (uint256) {
+        if (tokenDecimals == 18) {
+            return amount;
+        } else if (tokenDecimals > 18) {
+            return amount / (10 ** (tokenDecimals - 18));
+        } else {
+            return amount * (10 ** (18 - tokenDecimals));
+        }
+    }
+
     function _updateReward(address user, address vault) internal {
-        _updateVaultReward(vault);
-
+        VaultRewardInfo storage info = vaultRewards[vault];
         UserRewardInfo storage userInfo = userRewards[vault][user];
-        // 1. Calculate the final earned reward based on current state
-        uint256 finalEarnedReward = earned(user, vault);
 
-        // 2. Check if the user had previous, un-claimed rewards in this vault
-        // This is the reward amount currently sitting in userInfo.rewards
-        // that needs to be added to the total claimable pool.
-        uint256 rewardToAccumulate = finalEarnedReward - userInfo.rewards;
+        // Step 1: Update vault state FIRST (rewardPerTokenStored and lastUpdateTime)
+        // This ensures we're using the correct snapshot for user calculations
+        uint256 currentRpt;
+        if (info.totalStaked == 0) {
+            currentRpt = info.rewardPerTokenStored;
+        } else {
+            uint256 timeElapsed = block.timestamp - info.lastUpdateTime;
+            uint256 rewardAccrued = mulDiv(
+                info.rewardRate * timeElapsed,
+                1e18,
+                info.totalStaked
+            );
+            currentRpt = info.rewardPerTokenStored + rewardAccrued;
+        }
 
-        // 3. Accumulate the reward into the user's total claimable pool
-        // This removes the need for `claimMultiple` to loop and accumulate.
+        // Step 2: Update vault storage immediately
+        info.rewardPerTokenStored = currentRpt;
+        info.lastUpdateTime = block.timestamp;
+
+        // Step 3: Now calculate user rewards using the updated rewardPerTokenStored
+        uint256 rawBalance = IERC20(vault).balanceOf(user);
+        uint256 scaledBalance = _scaleTo18DecimalsUint(rawBalance, info.vaultDecimals);
+        uint256 rptDelta = currentRpt - userInfo.rewardPerTokenPaid;
+        uint256 newEarned = (scaledBalance * rptDelta) / 1e18;
+        uint256 finalEarned = userInfo.rewards + newEarned;
+
+        // Step 4: Update user state
+        uint256 rewardToAccumulate = finalEarned - userInfo.rewards;
         if (rewardToAccumulate > 0) {
             userTotalClaimableReward[user] += rewardToAccumulate;
         }
 
-        // 4. Reset the user's per-vault state to the calculated final earned amount
-        // The finalEarnedReward is stored here, meaning the reward calculation
-        // for the next second will start from this point.
-        userInfo.rewards = finalEarnedReward;
-        userInfo.rewardPerTokenPaid = vaultRewards[vault].rewardPerTokenStored;
-    }
-
-    function _updateVaultReward(address vault) internal {
-        VaultRewardInfo storage info = vaultRewards[vault];
-        info.rewardPerTokenStored = rewardPerToken(vault);
-        info.lastUpdateTime = block.timestamp;
+        userInfo.rewards = finalEarned;
+        userInfo.rewardPerTokenPaid = currentRpt;
     }
 
     /*//////////////////////////////////////////////////////////////
-                              VIEW FUNCTIONS
+                              VIEW HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    /**
-     * @notice Get pending rewards across multiple vaults
-     */
+    function getUserVaults(address user) external view returns (address[] memory) {
+        return userVaults[user];
+    }
+
     function pendingRewards(address user, address[] calldata vaultList) external view returns (uint256 total) {
         for (uint256 i = 0; i < vaultList.length; i++) {
             total += earned(user, vaultList[i]);

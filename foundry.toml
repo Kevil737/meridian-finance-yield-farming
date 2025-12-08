@@ -11,7 +11,8 @@ evm_version = "cancun"
 
 # Remappings
 remappings = [
-    "@openzeppelin/=lib/openzeppelin-contracts/"
+    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "prb-math/=lib/prb-math/src/"
 ]
 
 [profile.default.fmt]

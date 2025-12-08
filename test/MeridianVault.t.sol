@@ -5,6 +5,13 @@ import {Test, console} from "forge-std/Test.sol";
 import {MeridianVault} from "../src/MeridianVault.sol";
 import {IStrategy} from "../src/interfaces/IStrategy.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {
+    ZeroAddress,
+    DepositsPausedError,
+    StrategyAssetMismatch,
+    NoStrategy,
+    FeeTooHigh
+} from "../src/MeridianVault.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 /**
@@ -147,7 +154,7 @@ contract MockStrategy is IStrategy {
         }
 
         function test_RevertIf_DeployWithZeroTreasury() public {
-            vm.expectRevert(MeridianVault.ZeroAddress.selector);
+            vm.expectRevert(abi.encodeWithSelector(ZeroAddress.selector));
             new MeridianVault(usdc, "Test", "TST", address(0), owner);
         }
 
@@ -217,7 +224,7 @@ contract MockStrategy is IStrategy {
             vault.pauseDeposits(true);
 
             vm.prank(user1);
-            vm.expectRevert(MeridianVault.DepositsPausedError.selector);
+            vm.expectRevert(abi.encodeWithSelector(DepositsPausedError.selector));
             vault.deposit(1000 * 1e6, user1);
         }
 
@@ -302,7 +309,7 @@ contract MockStrategy is IStrategy {
 
         function test_RevertIf_SetStrategy_ZeroAddress() public {
             vm.prank(owner);
-            vm.expectRevert(MeridianVault.ZeroAddress.selector);
+            vm.expectRevert(abi.encodeWithSelector(ZeroAddress.selector));
             vault.setStrategy(address(0));
         }
 
@@ -311,7 +318,7 @@ contract MockStrategy is IStrategy {
             MockStrategy wrongStrategy = new MockStrategy(address(vault), address(otherToken));
 
             vm.prank(owner);
-            vm.expectRevert(MeridianVault.StrategyAssetMismatch.selector);
+            vm.expectRevert(abi.encodeWithSelector(StrategyAssetMismatch.selector));
             vault.setStrategy(address(wrongStrategy));
         }
 
@@ -374,7 +381,7 @@ contract MockStrategy is IStrategy {
         }
 
         function test_RevertIf_Harvest_NoStrategy() public {
-            vm.expectRevert(MeridianVault.NoStrategy.selector);
+            vm.expectRevert(abi.encodeWithSelector(NoStrategy.selector));
             vault.harvest();
         }
 
@@ -391,7 +398,7 @@ contract MockStrategy is IStrategy {
 
         function test_RevertIf_SetPerformanceFee_TooHigh() public {
             vm.prank(owner);
-            vm.expectRevert(MeridianVault.FeeTooHigh.selector);
+            vm.expectRevert(abi.encodeWithSelector(FeeTooHigh.selector));
             vault.setPerformanceFee(2001); // > 20%
         }
 

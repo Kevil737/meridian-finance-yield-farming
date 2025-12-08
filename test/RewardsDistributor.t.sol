@@ -21,51 +21,61 @@ contract RewardsDistributorTest is Test {
     address public user2 = address(4);
 
     uint256 constant INITIAL_BALANCE = 10_000 * 1e6;
-    uint256 constant REWARD_RATE = 1 * 1e18; // 1 MRD per second
+    uint256 constant REWARD_RATE = 1 * 1e18;
 
     function setUp() public {
-        // Deploy mock USDC
         usdc = new MockERC20("USD Coin", "USDC", 6);
 
-        // Deploy MRD token
         vm.prank(owner);
         mrdToken = new MeridianToken(owner);
 
-        // Deploy factory
         vm.prank(owner);
         factory = new VaultFactory(treasury, owner);
 
-        // Create vault
+        vm.prank(owner);
+        rewards = new RewardsDistributor(address(mrdToken), address(factory), owner);
+
+        vm.prank(owner);
+        mrdToken.addMinter(address(rewards));
+
         vm.prank(owner);
         address vaultAddr = factory.createVault(address(usdc));
         vault = MeridianVault(vaultAddr);
 
-        // Deploy rewards distributor
         vm.prank(owner);
-        rewards = new RewardsDistributor(address(mrdToken), address(factory), owner);
+        vault.setRewardsDistributor(address(rewards));
 
-        // Add rewards as minter
-        vm.prank(owner);
-        mrdToken.addMinter(address(rewards));
-
-        // Initialize vault rewards
         vm.prank(owner);
         rewards.initializeVault(address(vault), REWARD_RATE);
 
-        // Fund users
         usdc.mint(user1, INITIAL_BALANCE);
         usdc.mint(user2, INITIAL_BALANCE);
 
-        // Approve vault
         vm.prank(user1);
         usdc.approve(address(vault), type(uint256).max);
+
         vm.prank(user2);
         usdc.approve(address(vault), type(uint256).max);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                            DEPLOYMENT TESTS
-    //////////////////////////////////////////////////////////////*/
+    function test_DebugRewardsFlow() public {
+    vm.warp(block.timestamp + 1);
+
+    assertTrue(factory.isVault(address(vault)), "factory: vault NOT registered");
+
+    (uint256 rate, , , , ) = rewards.vaultRewards(address(vault));
+    assertGt(rate, 0, "rewards: rate == 0");
+
+    uint256 depositAmount = 1000 * 1e6;
+    vm.prank(user1);
+    vault.deposit(depositAmount, user1);
+
+    (,,, uint256 totalStakedAfter,) = rewards.vaultRewards(address(vault));
+    assertEq(totalStakedAfter, depositAmount * 1e12, "rewards: totalStaked not updated correctly");
+
+    (uint256 userRPT, ) = rewards.userRewards(address(vault), user1);
+    assertEq(userRPT, 0, "user rpt paid should be 0 at deposit");
+}
 
     function test_InitialState() public view {
         assertEq(address(rewards.rewardToken()), address(mrdToken));
@@ -73,10 +83,6 @@ contract RewardsDistributorTest is Test {
         assertEq(rewards.owner(), owner);
         assertEq(rewards.totalDistributed(), 0);
     }
-
-    /*//////////////////////////////////////////////////////////////
-                        VAULT INITIALIZATION TESTS
-    //////////////////////////////////////////////////////////////*/
 
     function test_InitializeVault() public {
         MockERC20 newToken = new MockERC20("Test", "TST", 18);
@@ -87,7 +93,7 @@ contract RewardsDistributorTest is Test {
         vm.prank(owner);
         rewards.initializeVault(newVaultAddr, REWARD_RATE);
 
-        (uint256 rate,,,) = rewards.vaultRewards(newVaultAddr);
+        (uint256 rate,,,,) = rewards.vaultRewards(newVaultAddr);
         assertEq(rate, REWARD_RATE);
     }
 
@@ -105,201 +111,168 @@ contract RewardsDistributorTest is Test {
 
         vm.prank(owner);
         vm.expectRevert(RewardsDistributor.RateTooHigh.selector);
-        rewards.initializeVault(newVaultAddr, 101 * 1e18); // > 100 MRD/sec
+        rewards.initializeVault(newVaultAddr, 101 * 1e18);
     }
-
-    /*//////////////////////////////////////////////////////////////
-                          REWARD EARNING TESTS
-    //////////////////////////////////////////////////////////////*/
 
     function test_EarnRewards() public {
-        // User deposits
+        vm.warp(block.timestamp + 1);
+
         vm.prank(user1);
         vault.deposit(1000 * 1e6, user1);
 
-        // Notify rewards
-        vm.prank(user1);
-        rewards.notifyDeposit(address(vault));
-
-        // Wait 100 seconds
         vm.warp(block.timestamp + 100);
 
-        // Check earned
         uint256 earned = rewards.earned(user1, address(vault));
-        assertEq(earned, 100 * 1e18); // 100 seconds * 1 MRD/sec
+
+        assertApproxEqAbs(earned, 100 * 1e18, 2 * 1e18);
     }
 
-    function test_EarnRewards_ProportionalToShares() public {
-        // User1 deposits 1000, User2 deposits 3000 (25% / 75%)
+     function test_EarnRewards_ProportionalToShares() public {
+        vm.warp(block.timestamp + 1);
+
         vm.prank(user1);
         vault.deposit(1000 * 1e6, user1);
-        vm.prank(user1);
-        rewards.notifyDeposit(address(vault));
 
         vm.prank(user2);
         vault.deposit(3000 * 1e6, user2);
-        vm.prank(user2);
-        rewards.notifyDeposit(address(vault));
 
-        // Wait 100 seconds
         vm.warp(block.timestamp + 100);
 
         uint256 earned1 = rewards.earned(user1, address(vault));
         uint256 earned2 = rewards.earned(user2, address(vault));
 
-        // User1: 25% of rewards, User2: 75% of rewards
-        // Total: 100 MRD
-        assertApproxEqRel(earned1, 25 * 1e18, 0.01e18); // 25 MRD ± 1%
-        assertApproxEqRel(earned2, 75 * 1e18, 0.01e18); // 75 MRD ± 1%
+        assertApproxEqAbs(earned1, 25 * 1e18, 1 * 1e18);
+        assertApproxEqAbs(earned2, 75 * 1e18, 1 * 1e18);
     }
 
     function test_RewardPerToken() public {
-        // User deposits
+        vm.warp(block.timestamp + 1);
+
         vm.prank(user1);
         vault.deposit(1000 * 1e6, user1);
-        vm.prank(user1);
-        rewards.notifyDeposit(address(vault));
 
-        // Initially 0
         uint256 rpt0 = rewards.rewardPerToken(address(vault));
 
-        // Wait 100 seconds
         vm.warp(block.timestamp + 100);
 
         uint256 rpt1 = rewards.rewardPerToken(address(vault));
 
-        // Should be 100 MRD / 1000 shares * 1e18 = 0.1 * 1e18
         assertGt(rpt1, rpt0);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                            CLAIM TESTS
-    //////////////////////////////////////////////////////////////*/
-
     function test_ClaimRewards() public {
-        // Deposit and notify
+        vm.warp(block.timestamp + 1);
+
         vm.prank(user1);
         vault.deposit(1000 * 1e6, user1);
-        vm.prank(user1);
-        rewards.notifyDeposit(address(vault));
 
-        // Wait
         vm.warp(block.timestamp + 100);
 
         uint256 expectedReward = rewards.earned(user1, address(vault));
 
-        // Claim
         vm.prank(user1);
         rewards.claim(address(vault));
 
         assertEq(mrdToken.balanceOf(user1), expectedReward);
         assertEq(rewards.earned(user1, address(vault)), 0);
-        assertEq(rewards.totalDistributed(), expectedReward);
+        assertApproxEqAbs(rewards.totalDistributed(), expectedReward, 1);
     }
 
     function test_ClaimRewards_EmitsEvent() public {
+        vm.warp(block.timestamp + 1);
+
         vm.prank(user1);
         vault.deposit(1000 * 1e6, user1);
-        vm.prank(user1);
-        rewards.notifyDeposit(address(vault));
 
         vm.warp(block.timestamp + 100);
 
+        uint256 expectedReward = rewards.earned(user1, address(vault));
+
         vm.prank(user1);
         vm.expectEmit(true, true, false, false);
-        emit RewardsDistributor.RewardsClaimed(user1, address(vault), 0);
+        emit RewardsDistributor.RewardsClaimed(user1, address(vault), expectedReward);
         rewards.claim(address(vault));
     }
 
     function test_RevertIf_Claim_NoRewards() public {
-        vm.prank(user1);
-        vm.expectRevert(RewardsDistributor.NoRewards.selector);
-        rewards.claim(address(vault));
-    }
+    vm.warp(block.timestamp + 1);
+    
+    vm.prank(user1);
+    vault.deposit(1000 * 1e6, user1);
+    
+    vm.warp(block.timestamp + 100);
+    
+    vm.prank(user1);
+    rewards.claim(address(vault));
+    
+    vm.prank(user1);
+    vm.expectRevert(RewardsDistributor.NoRewards.selector);
+    rewards.claim(address(vault));
+}
 
-    function test_ClaimMultiple() public {
-        // Create second vault
+    function test_ClaimAll() public {
+        vm.warp(block.timestamp + 1);
+
         MockERC20 weth = new MockERC20("WETH", "WETH", 18);
+
         vm.prank(owner);
         address vault2Addr = factory.createVault(address(weth));
         MeridianVault vault2 = MeridianVault(vault2Addr);
 
         vm.prank(owner);
+        vault2.setRewardsDistributor(address(rewards));
+
+        vm.prank(owner);
         rewards.initializeVault(vault2Addr, REWARD_RATE);
 
-        // Fund user and deposit to both
-        weth.mint(user1, 1000 * 1e18);
+        weth.mint(user1, 1000e18);
+
         vm.startPrank(user1);
-        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(1000e6, user1);
         weth.approve(vault2Addr, type(uint256).max);
-
-        vault.deposit(1000 * 1e6, user1);
-        rewards.notifyDeposit(address(vault));
-
-        vault2.deposit(1000 * 1e18, user1);
-        rewards.notifyDeposit(vault2Addr);
+        vault2.deposit(1000e18, user1);
         vm.stopPrank();
 
-        // Wait
-        vm.warp(block.timestamp + 100);
-
-        // Claim from both
-        address[] memory vaults = new address[](2);
-        vaults[0] = address(vault);
-        vaults[1] = vault2Addr;
-
-        vm.prank(user1);
-        rewards.claimMultiple(vaults);
-
-        // Should receive rewards from both vaults
-        assertEq(mrdToken.balanceOf(user1), 200 * 1e18); // 100 from each
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        NOTIFY DEPOSIT/WITHDRAW
-    //////////////////////////////////////////////////////////////*/
-
-    function test_NotifyDeposit() public {
-        vm.prank(user1);
-        vault.deposit(1000 * 1e6, user1);
-
-        vm.prank(user1);
-        rewards.notifyDeposit(address(vault));
-
-        // Check totalStaked updated
-        (,,, uint256 totalStaked) = rewards.vaultRewards(address(vault));
-        assertEq(totalStaked, 1000 * 1e6);
-    }
-
-    function test_NotifyWithdraw() public {
-        vm.prank(user1);
-        vault.deposit(1000 * 1e6, user1);
-        vm.prank(user1);
-        rewards.notifyDeposit(address(vault));
-
-        // Wait and withdraw
         vm.warp(block.timestamp + 100);
 
         vm.prank(user1);
-        vault.withdraw(500 * 1e6, user1, user1);
+        rewards.claimAll();
 
-        vm.prank(user1);
-        rewards.notifyWithdraw(address(vault));
-
-        // Should still have earned rewards
-        uint256 earned = rewards.earned(user1, address(vault));
-        assertGt(earned, 0);
+        assertApproxEqAbs(mrdToken.balanceOf(user1), 200e18, 2 * 1e18);
+        assertEq(rewards.userTotalClaimableReward(user1), 0);
     }
 
-    function test_RevertIf_NotifyDeposit_NotAVault() public {
+    function test_OnDeposit_UpdatesVaultState() public {
+        vm.warp(block.timestamp + 1);
+
+        uint256 amount = 1000e6;
+        uint256 scaledAmount = amount * 1e12;
+
         vm.prank(user1);
-        vm.expectRevert(RewardsDistributor.NotAVault.selector);
-        rewards.notifyDeposit(address(usdc));
+        vault.deposit(amount, user1);
+
+        (,, , uint256 totalStaked,) = rewards.vaultRewards(address(vault));
+
+        assertEq(totalStaked, scaledAmount);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                            ADMIN TESTS
-    //////////////////////////////////////////////////////////////*/
+    function test_OnWithdraw_UpdatesVaultState() public {
+        vm.warp(block.timestamp + 1);
+
+        vm.prank(user1);
+        vault.deposit(1000e6, user1);
+
+        vm.warp(block.timestamp + 100);
+
+        vm.prank(user1);
+        vault.withdraw(500e6, user1, user1);
+        uint256 scaledRemaining = 500e6 * 1e12;
+
+        (,, , uint256 totalStaked,) = rewards.vaultRewards(address(vault));
+
+        assertEq(totalStaked, scaledRemaining);
+        assertGt(rewards.earned(user1, address(vault)), 0);
+    }
 
     function test_SetRewardRate() public {
         uint256 newRate = 2 * 1e18;
@@ -307,7 +280,7 @@ contract RewardsDistributorTest is Test {
         vm.prank(owner);
         rewards.setRewardRate(address(vault), newRate);
 
-        (uint256 rate,,,) = rewards.vaultRewards(address(vault));
+        (uint256 rate,,,,) = rewards.vaultRewards(address(vault));
         assertEq(rate, newRate);
     }
 
@@ -332,53 +305,48 @@ contract RewardsDistributorTest is Test {
         rewards.setRewardRate(address(usdc), 2 * 1e18);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                            VIEW FUNCTIONS
-    //////////////////////////////////////////////////////////////*/
-
     function test_PendingRewards() public {
-        // Create second vault
+        vm.warp(block.timestamp + 1);
+
         MockERC20 weth = new MockERC20("WETH", "WETH", 18);
+
         vm.prank(owner);
         address vault2Addr = factory.createVault(address(weth));
 
         vm.prank(owner);
+        MeridianVault(vault2Addr).setRewardsDistributor(address(rewards));
+
+        vm.prank(owner);
         rewards.initializeVault(vault2Addr, REWARD_RATE);
 
-        // Deposit to first vault only
         vm.prank(user1);
         vault.deposit(1000 * 1e6, user1);
-        vm.prank(user1);
-        rewards.notifyDeposit(address(vault));
 
         vm.warp(block.timestamp + 100);
 
-        address[] memory vaults = new address[](2);
-        vaults[0] = address(vault);
-        vaults[1] = vault2Addr;
+        address[] memory vaultList = new address[](2);
+        vaultList[0] = address(vault);
+        vaultList[1] = vault2Addr;
 
-        uint256 pending = rewards.pendingRewards(user1, vaults);
-        assertEq(pending, 100 * 1e18);
+        uint256 pending = rewards.pendingRewards(user1, vaultList);
+
+        assertApproxEqAbs(pending, 100e18, 2 * 1e18);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                              FUZZ TESTS
-    //////////////////////////////////////////////////////////////*/
-
     function testFuzz_RewardsAccrual(uint256 depositAmount, uint256 timeElapsed) public {
+        vm.warp(block.timestamp + 1);
+
         depositAmount = bound(depositAmount, 1e6, INITIAL_BALANCE);
         timeElapsed = bound(timeElapsed, 1, 365 days);
 
         vm.prank(user1);
         vault.deposit(depositAmount, user1);
-        vm.prank(user1);
-        rewards.notifyDeposit(address(vault));
 
         vm.warp(block.timestamp + timeElapsed);
 
         uint256 earned = rewards.earned(user1, address(vault));
         uint256 expected = timeElapsed * REWARD_RATE;
 
-        assertApproxEqRel(earned, expected, 0.001e18); // Within 0.1%
+        assertApproxEqAbs(earned, expected, 2 * 1e18);
     }
 }

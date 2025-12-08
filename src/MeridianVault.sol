@@ -8,6 +8,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {RewardsDistributor} from "./RewardsDistributor.sol";
 import {IStrategy} from "./interfaces/IStrategy.sol";
 
 /*//////////////////////////////////////////////////////////////
@@ -74,6 +75,9 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
     /// @notice Whether deposits are paused
     bool public depositsPaused;
 
+    /// @notice RewardsDistributor contract
+    RewardsDistributor public rewards;
+
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -134,6 +138,11 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
         if (depositsPaused) revert DepositsPausedError();
         shares = super.deposit(assets, receiver);
         _allocateToStrategy();
+
+        if (address(rewards) != address(0)) {
+            rewards.notifyDepositFor(receiver, address(this));
+        }
+        return shares;
     }
 
     /**
@@ -143,6 +152,11 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
         if (depositsPaused) revert DepositsPausedError();
         assets = super.mint(shares, receiver);
         _allocateToStrategy();
+
+        if (address(rewards) != address(0)) {
+            rewards.notifyDepositFor(receiver, address(this));
+        }
+        return assets;
     }
 
     /**
@@ -157,6 +171,11 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
     {
         _ensureLiquidity(assets);
         shares = super.withdraw(assets, receiver, owner);
+
+        if (address(rewards) != address(0)) {
+            rewards.notifyWithdrawFor(owner, address(this));
+        }
+        return shares;
     }
 
     /**
@@ -171,6 +190,11 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
         assets = previewRedeem(shares);
         _ensureLiquidity(assets);
         assets = super.redeem(shares, receiver, owner);
+
+        if (address(rewards) != address(0)) {
+            rewards.notifyWithdrawFor(owner, address(this));
+        }
+        return assets;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -274,6 +298,11 @@ contract MeridianVault is ERC4626, ReentrancyGuard, Ownable {
         if (_buffer > FEE_DENOMINATOR) revert AllocationTooHigh();
         emit BufferPercentUpdated(bufferPercent, _buffer);
         bufferPercent = _buffer;
+    }
+
+    function setRewardsDistributor(address _rewards) external onlyOwner {
+        if (_rewards == address(0)) revert ZeroAddress();
+        rewards = RewardsDistributor(_rewards);
     }
 
     function pauseDeposits(bool _pause) external onlyOwner {
