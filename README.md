@@ -34,6 +34,7 @@ The Meridian Protocol is designed to manage a yield-generating system with incen
 
 ## 🏗️ Architecture
 
+```mermaid
 graph TB
 subgraph User["👤 User"]
 A1["Deposit USDC"]
