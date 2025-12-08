@@ -36,11 +36,11 @@ The Meridian Protocol is designed to manage a yield-generating system with incen
 
 ```mermaid
 graph TB
-subgraph User["👤 User"]
-A1["Deposit USDC"]
-A2["Claim MRD Rewards"]
-A3["Withdraw + Profit"]
-end
+    subgraph User["👤 User"]
+        A1["Deposit USDC"]
+        A2["Claim MRD Rewards"]
+        A3["Withdraw + Profit"]
+    end
 
     subgraph Vault["🏦 MeridianVault"]
         B1["Receive Deposit"]
@@ -79,23 +79,24 @@ end
     C3 -->|Return Yield| B4
     B4 -->|Continuous| D2
     D2 -->|Time Passes| D3
-    A2 -->|claim()| D4
+    A2 -->|claim| D4
     D4 -->|Mint| E2
     E2 -->|Transfer| A2
     B4 -->|Withdraw| A3
-    A3 -->|Burn Shares| Vault
+    A3 -->|Burn Shares| B1
 
-    style User fill:#4A90E2
-    style Vault fill:#7ED321
-    style Strategy fill:#F5A623
-    style Rewards fill:#BD10E0
-    style Token fill:#50E3C2
+    style User fill:#4A90E2,stroke:#333,color:#fff
+    style Vault fill:#7ED321,stroke:#333,color:#000
+    style Strategy fill:#F5A623,stroke:#333,color:#fff
+    style Rewards fill:#BD10E0,stroke:#333,color:#fff
+    style Token fill:#50E3C2,stroke:#333,color:#000
 
 ```
 
 ## Detailed Flow Explanation
 
 ### 1. Deposit Flow
+
 ```
 
 User --deposit(1000 USDC)--> Vault
@@ -114,6 +115,7 @@ Vault --allocateToStrategy()--> Strategy
 ```
 
 ### 2. Reward Accrual (Time-based)
+
 ```
 
 Block 100 → User deposits 1000 USDC
@@ -131,6 +133,7 @@ earned = (0.1 - 0) × 1000 = 100 MRD tokens
 ```
 
 ### 3. Claim Flow
+
 ```
 
 User --claim()--> RewardsDistributor
@@ -144,7 +147,8 @@ User --claim()--> RewardsDistributor
 ```
 
 ### 4. Harvest & Yield Flow
-```
+
+````
 
 Strategy earns 100 USDC yield (via Aave interest)
 ↓
@@ -270,7 +274,7 @@ The `RewardsDistributor` tests verify industry-standard reward mechanics:
 # Install Foundry (if not already installed)
 curl -L https://foundry.paradigm.xyz | bash
 foundryup
-```
+````
 
 ### Installation
 
