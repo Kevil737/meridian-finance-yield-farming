@@ -36,60 +36,48 @@ The Meridian Protocol is designed to manage a yield-generating system with incen
 
 ```mermaid
 graph TB
-    subgraph User["👤 User"]
+    subgraph User["User Actions"]
         A1["Deposit USDC"]
-        A2["Claim MRD Rewards"]
-        A3["Withdraw + Profit"]
+        A2["Claim Rewards"]
+        A3["Withdraw"]
     end
 
-    subgraph Vault["🏦 MeridianVault"]
+    subgraph Vault["MeridianVault"]
         B1["Receive Deposit"]
         B2["Mint Shares"]
-        B3["Allocate to Strategy"]
+        B3["Allocate Funds"]
         B4["Harvest Yield"]
-        B5["Keep 5% Buffer"]
     end
 
-    subgraph Strategy["⚙️ AaveV3Strategy"]
-        C1["Deploy Funds"]
-        C2["Earn Interest"]
-        C3["Generate Yield"]
+    subgraph Strategy["Strategy Layer"]
+        C1["Aave V3"]
+        C2["Earn Yield"]
     end
 
-    subgraph Rewards["🎁 RewardsDistributor"]
-        D1["notifyDepositFor"]
-        D2["Calculate Accrual"]
-        D3["earned = RPT × Shares"]
-        D4["Mint MRD to User"]
+    subgraph Rewards["RewardsDistributor"]
+        D1["Track Deposits"]
+        D2["Accumulate Rewards"]
+        D3["Calculate Earned"]
+        D4["Mint MRD"]
     end
 
-    subgraph Token["💎 MeridianToken"]
-        E1["Governance Token"]
-        E2["Mint for Rewards"]
-    end
-
-    A1 -->|Transfer USDC| B1
+    A1 --> B1
     B1 --> B2
-    B2 -->|Notify Deposit| D1
-    D1 -->|Snapshot RPT| D2
     B2 --> B3
-    B3 -->|Send Funds| C1
+    B3 --> C1
     C1 --> C2
-    C2 --> C3
-    C3 -->|Return Yield| B4
-    B4 -->|Continuous| D2
-    D2 -->|Time Passes| D3
-    A2 -->|claim| D4
-    D4 -->|Mint| E2
-    E2 -->|Transfer| A2
-    B4 -->|Withdraw| A3
-    A3 -->|Burn Shares| B1
+    C2 --> B4
+    B2 --> D1
+    D1 --> D2
+    D2 --> D3
+    A2 --> D4
+    D4 --> A2
+    B4 --> A3
 
-    style User fill:#4A90E2,stroke:#333,color:#fff
-    style Vault fill:#7ED321,stroke:#333,color:#000
-    style Strategy fill:#F5A623,stroke:#333,color:#fff
-    style Rewards fill:#BD10E0,stroke:#333,color:#fff
-    style Token fill:#50E3C2,stroke:#333,color:#000
+    style User fill:#e1f5ff,stroke:#0277bd,stroke-width:2px
+    style Vault fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    style Strategy fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style Rewards fill:#fff3e0,stroke:#e65100,stroke-width:2px
 
 ```
 
