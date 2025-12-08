@@ -34,17 +34,120 @@ The Meridian Protocol is designed to manage a yield-generating system with incen
 
 ## 🏗️ Architecture
 
-```mermaid
-flowchart TD
-    A[User] -->|Deposit USDC| B[USDC Vault]
-    B -->|Allocates Funds| C[AaveV3StrategySimple]
-    C -->|Earns Yield| B
-    B -->|Harvest Profits| A
-    B -->|Notify Deposits/Withdrawals| D[RewardsDistributor]
-    D -->|Calculate & Distribute MRD| A
-    E[MeridianToken] -->|Mint Rewards| D
-    F[VaultFactory] -->|Deploy| B
+graph TB
+    subgraph User["👤 User"]
+        A1["Deposit USDC"]
+        A2["Claim MRD Rewards"]
+        A3["Withdraw + Profit"]
+    end
+
+    subgraph Vault["🏦 MeridianVault"]
+        B1["Receive Deposit"]
+        B2["Mint Shares"]
+        B3["Allocate to Strategy"]
+        B4["Harvest Yield"]
+        B5["Keep 5% Buffer"]
+    end
+
+    subgraph Strategy["⚙️ AaveV3Strategy"]
+        C1["Deploy Funds"]
+        C2["Earn Interest"]
+        C3["Generate Yield"]
+    end
+
+    subgraph Rewards["🎁 RewardsDistributor"]
+        D1["notifyDepositFor"]
+        D2["Calculate Accrual"]
+        D3["earned = RPT × Shares"]
+        D4["Mint MRD to User"]
+    end
+
+    subgraph Token["💎 MeridianToken"]
+        E1["Governance Token"]
+        E2["Mint for Rewards"]
+    end
+
+    A1 -->|Transfer USDC| B1
+    B1 --> B2
+    B2 -->|Notify Deposit| D1
+    D1 -->|Snapshot RPT| D2
+    B2 --> B3
+    B3 -->|Send Funds| C1
+    C1 --> C2
+    C2 --> C3
+    C3 -->|Return Yield| B4
+    B4 -->|Continuous| D2
+    D2 -->|Time Passes| D3
+    A2 -->|claim()| D4
+    D4 -->|Mint| E2
+    E2 -->|Transfer| A2
+    B4 -->|Withdraw| A3
+    A3 -->|Burn Shares| Vault
+
+    style User fill:#4A90E2
+    style Vault fill:#7ED321
+    style Strategy fill:#F5A623
+    style Rewards fill:#BD10E0
+    style Token fill:#50E3C2
 ```
+
+## Detailed Flow Explanation
+
+### 1. Deposit Flow
+```
+User --deposit(1000 USDC)--> Vault
+                                ├─ Transfer USDC to Vault
+                                ├─ Calculate shares (ERC4626)
+                                ├─ Mint 1000 shares to User
+                                └─ notifyDepositFor(user)
+                                        └─ RewardsDistributor snapshots RPT
+                                           (User can't earn retroactive rewards)
+                                
+Vault --allocateToStrategy()--> Strategy
+                                ├─ Keep 5% in vault (buffer)
+                                └─ Send 95% to Aave
+                                    └─ Earn interest continuously
+```
+
+### 2. Reward Accrual (Time-based)
+```
+Block 100 → User deposits 1000 USDC
+            totalStaked = 1000
+            rewardPerToken = 0
+            user.rewardPerTokenPaid = 0
+
+Block 200 → 100 seconds passed
+            rewardPerToken = (1 MRD/sec × 100 sec) / 1000 shares = 0.1 per share
+            
+Block 300 → User checks earned()
+            earned = (0.1 - 0) × 1000 = 100 MRD tokens
+            (Not yet in user's wallet - just accrued)
+```
+
+### 3. Claim Flow
+```
+User --claim()--> RewardsDistributor
+                        ├─ _updateReward(user)
+                        │   ├─ Calculate rewardPerToken up to NOW
+                        │   ├─ Calculate user.earned
+                        │   └─ Finalize user state
+                        ├─ Mint earned MRD to user
+                        └─ Reset user.rewards = 0
+```
+
+### 4. Harvest & Yield Flow
+```
+Strategy earns 100 USDC yield (via Aave interest)
+                        ↓
+Anyone calls harvest() on Vault
+                        ↓
+Vault takes 10% fee (10 USDC) → Treasury
+                        ↓
+Remaining 90 USDC stays in vault
+                        ↓
+totalAssets increases → Shares worth more
+                        ↓
+User benefits from yield without doing anything
 
 The system follows a modular, **Factory-Vault-Strategy** structure, a highly composable and secure pattern in modern DeFi. The `VaultFactory` acts as the single point of truth for deploying yield-bearing `MeridianVaults`, which interact with external protocols via modular `Strategy` contracts and notify the `RewardsDistributor` of user interactions.
 
